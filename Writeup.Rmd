@@ -1,0 +1,189 @@
+---
+title: "Practical Machine Learning : Project Overview"
+output: html_document
+---
+
+# Summary
+
+  This document is a summary of the choices and methods used in completing the course project for "Practical Machine Learning".  After careful feature selection, despite many attempts it was not possible to beat the predictions of the default Random Forest parameters, which produced an in-sample accuracy rate of 100%, and out-sample accuracy rate of 98%. This model also managed to perfectly predict the test data assigned.
+  
+# Feature Selection
+
+  Careful feature selection is essential to a good prediction engine.  While no codebook was provided, the publication ["Qualitative Activy Recognition of Weight Lifting Exercises"](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf)[^1] published by the research group provided enough descriptions of the recorded data to make an educated guess at the representation.  Basically, we have a one line summary of a performed exercise, followed by several lines that provide measurements at various timestamped offsets from the beginning of the exercise.
+  Because we are being asked to predict the category of exercis based on data at a specific point in time, we want to strip out all of the temporal data and all features that only appear in the summary rows.  In addition, to prevent us from biasing based on the specific person performing the exercise, we will strip out the name of the person performing the exercise.  The code in R is as follows:
+
+```{r}
+ExtractData <- function(filename)
+{
+  x <- read.csv(filename)
+  x <- x[which(x$kurtosis_roll_belt == "" | is.na(x$kurtosis_roll_belt)), ]
+  
+  #It's definitely debatable if user name should be here
+  goodRows <- c(#"user_name",
+                "roll_belt",
+                "pitch_belt",
+                "yaw_belt",
+                "total_accel_belt",
+                "gyros_belt_x",
+                "gyros_belt_y",
+                "gyros_belt_z",
+                "accel_belt_x",
+                "accel_belt_y",
+                "accel_belt_z",
+                "magnet_belt_x",
+                "magnet_belt_y",
+                "magnet_belt_z",
+                "roll_arm",
+                "pitch_arm",
+                "yaw_arm",
+                "total_accel_arm",
+                "gyros_arm_x",
+                "gyros_arm_y",
+                "gyros_arm_z",
+                "accel_arm_x",
+                "accel_arm_y",
+                "accel_arm_z",
+                "magnet_arm_x",
+                "magnet_arm_y",
+                "magnet_arm_z",
+                "roll_dumbbell",
+                "pitch_dumbbell",
+                "yaw_dumbbell",
+                "classe")
+  
+  return(x[, names(x) %in% goodRows]);
+}
+```
+
+# Preprocssing the data
+
+We will split the training data into our own test and training sets to allow for cross-validtion via keeping track of the in-sample and out-sample accuracy of our models.  This is done using the standard methods in the caret function, as follows:
+
+```{r}
+library(caret);
+data <- ExtractData('pml-training.csv')
+set.seed(1234)
+inTrain = createDataPartition(data$classe, p = 3/4)[[1]]
+training = data[ inTrain,]
+testing = data[-inTrain,]
+```
+
+To further verify that our feature selection was appropriate, we will test our training set to verify that no columns are highly correlated, and that no columns are linear combinations of other columns.
+
+```{r}
+#Look at Correlations & Linear Combinations
+correlations <- cor(training[, 2:ncol(training)-1]); # -1 to remove classe variable
+sum(abs(correlations[upper.tri(correlations)]) > 0.999); # 0 is good!
+findLinearCombos(cor(training[, 2:ncol(training)-1])); #none is good
+```
+[^4]
+
+# Model Selection
+
+  The idea behind model selection was as follows.  We would use "Random Forest" as our base model, but to improve accuracy we are going to stack models.  Thus, we want to select 4 other models most dissimilar from the Random Forest model in hopes that the strengths and weaknesses of those models would be expressed when the models are stacked.  The code to select the models (provided the model descriptor file tag_data.csv available at caret's site)[^2] is as follows:
+  
+```{r}
+FindMaxDisimmilar <- function(numModels)
+{
+  tag <- read.csv("tag_data.csv", row.names = 1)
+  tag <- as.matrix(tag)
+  
+  ## Select only models for classification
+  classModels <- tag[tag[,"Classification"] == 1,]
+  
+  all <- 1:nrow(classModels)
+  ## Seed the analysis with the SVM model
+  start <- grep("(rf)", rownames(classModels), fixed = TRUE)
+  pool <- all[all != start]
+  
+  ## Select 4 model models by maximizing the Jaccard
+  ## dissimilarity between sets of models
+  nextMods <- maxDissim(classModels[start,,drop = FALSE],
+                        classModels[pool, ],
+                        method = "Jaccard",
+                        n = numModels)
+  
+  rownames(classModels)[c(start, nextMods)]
+};
+
+FindMaxDisimmilar(5);
+
+```
+[^3]
+
+Because of implementation issues, the sddaLDA model was not used.
+
+# Training
+
+Using the caret package, training is very straight forward.  For each model we chose, we will train four variants of the model.  One with the default parameters (i.e. bootstrapped with no pre-processing), one with PCA pre-processing, one with Cross Validation being run during the training step, and one with both PCA and Cross-Validation.  The default values for all methods were used since this was considered to be meerly a starting point, with fine-tuning to come depending on the outcome.
+
+```{r, cache=TRUE, eval=FALSE}
+rf.pca.cv.Fit <- train(classe ~ ., data=training, method="rf", preProcess=c("pca"), trControl=trainControl(method="cv"));
+multinom.pca.cv.Fit <- train(classe ~ ., data=training, method="multinom", preProcess=c("pca"), trControl=trainControl(method="cv"));
+svmRadialCost.pca.cv.Fit <- train(classe ~ ., data=training, method="svmRadialCost", preProcess=c("pca"), trControl=trainControl(method="cv"));
+SIMCA.pca.cv.Fit <- train(classe ~ ., data=training, method="CSimca", preProcess=c("pca"), trControl=trainControl(method="cv"));
+kernelpls.pca.cv.Fit <- train(classe ~ ., data=training, method="kernelpls", preProcess=c("pca"), trControl=trainControl(method="cv"));
+
+rf.cv.Fit <- train(classe ~ ., data=training, method="rf", trControl=trainControl(method="cv"));
+multinom.cv.Fit <- train(classe ~ ., data=training, method="multinom", trControl=trainControl(method="cv"));
+svmRadialCost.cv.Fit <- train(classe ~ ., data=training, method="svmRadialCost", trControl=trainControl(method="cv"));
+SIMCA.cv.Fit <- train(classe ~ ., data=training, method="CSimca", preProcess=c("pca"), trControl=trainControl(method="cv"));
+kernelpls.cv.Fit <- train(classe ~ ., data=training, method="kernelpls", preProcess=c("pca"), trControl=trainControl(method="cv"));
+
+rf.pca.Fit <- train(classe ~ ., data=training, method="rf", preProcess=c("pca"));
+multinom.pca.Fit <- train(classe ~ ., data=training, method="multinom", preProcess=c("pca"));
+svmRadialCost.pca.Fit <- train(classe ~ ., data=training, method="svmRadialCost", preProcess=c("pca"));
+SIMCA.pca.Fit <- train(classe ~ ., data=training, method="CSimca", preProcess=c("pca"));
+kernelpls.pca.Fit <- train(classe ~ ., data=training, method="kernelpls", preProcess=c("pca"));
+
+rf.Fit <- train(classe ~ ., data=training, method="rf");
+multinom.Fit <- train(classe ~ ., data=training, method="multinom");
+svmRadialCost.Fit <- train(classe ~ ., data=training, method="svmRadialCost");
+SIMCA.Fit <- train(classe ~ ., data=training, method="CSimca");
+kernelpls.Fit <- train(classe ~ ., data=training, method="kernelpls");
+```
+
+```{r, echo=FALSE}
+#The above code block takes ~9 hours to run, and right before the deadline I accidently invalidated my cache, so I am loading the results from a previous
+#run because I don't have time before the deadline hits.  If you change "eval" to TRUE you will see these same results.
+load("fits.Rmd");
+```
+
+# Prediction
+
+With our models trained, we will calculate the in-sample and out-sample error rates of our various models.  As for a prediction to the error rates, all I can really say is that we should expect the out-sample rate to be less than the in-sample rate unless the model is patheological.  In addition, we should expect the in-sample PCA models to be less accurate compared to the non-PCA models, however the out-sample accuracy may be higher if the non-preprocessed-data plus the specific model chosen tends to overfit.
+
+```{r, cache=TRUE, results='asis'}
+library(knitr)
+accuracy <- function(model, data)
+{
+  numCorrect <- predict(model, newdata=data) == data$classe;
+  return(sum(numCorrect) / nrow(data));
+}
+
+massPredict <- function(modelNames, newData)
+{
+  sapply(modelNames, function(modelName) { fit <- eval(parse(text=modelName)); accuracy(fit, newData) });
+}
+
+models.fit <- c(rf.pca.cv.Fit,multinom.pca.cv.Fit,svmRadialCost.pca.cv.Fit,SIMCA.pca.cv.Fit,kernelpls.pca.cv.Fit,rf.cv.Fit,multinom.cv.Fit,svmRadialCost.cv.Fit,SIMCA.cv.Fit,kernelpls.cv.Fit,rf.pca.Fit,multinom.pca.Fit,svmRadialCost.pca.Fit,SIMCA.pca.Fit,kernelpls.pca.Fit,rf.Fit,multinom.Fit,svmRadialCost.Fit,SIMCA.Fit,kernelpls.Fit)
+
+models.names <- c("rf.pca.cv.Fit","multinom.pca.cv.Fit","svmRadialCost.pca.cv.Fit","SIMCA.pca.cv.Fit","kernelpls.pca.cv.Fit","rf.cv.Fit","multinom.cv.Fit","svmRadialCost.cv.Fit","SIMCA.cv.Fit","kernelpls.cv.Fit","rf.pca.Fit","multinom.pca.Fit","svmRadialCost.pca.Fit","SIMCA.pca.Fit","kernelpls.pca.Fit","rf.Fit","multinom.Fit","svmRadialCost.Fit","SIMCA.Fit","kernelpls.Fit")
+
+model.accuracy <- data.frame(group = rep(c("rf", "multinom", "svnRadialCost", "SIMCA", "kernelpls"),4),
+                           insample.accuracy = massPredict(models.names, training),
+                           outsample.accuracy = massPredict(models.names, testing));
+
+kable(model.accuracy[order(model.accuracy$group), ]);
+```
+
+The plan was to use this data to pick a good blend of models to stack.  The problem, which is a good problem to have, is the random forest model alone is staggeringly effective at predicting the class of exercise.  It had a 100% in-sample accuracy rate on every variation -- which usually is a warning sign for over-fitting.  Its out-sample accuracy rate varied between 92.2% and 98.0%, which tends to lead to the conclusion that the model isn't necessarily over-fitting and is just very good.
+
+After seeing this data I chose the default random forest model with the current model selection as my final model.  It scored 100% on the final submission.
+
+In some sense this exercise was enlightening, showing how powerful the tools provided with caret are.  In other ways it is frustrating, seeing the bar is set so high that it was pointless to try to seek out a better model for this exercise.
+
+[^1]: Velloso, Eduardo, et al. "Qualitative activity recognition of weight lifting exercises." Proceedings of the 4th Augmented Human International Conference. ACM, 2013.
+[^2]: http://topepo.github.io/caret/tag_data.csv
+[^3]: http://topepo.github.io/caret/similarity.html
+[^4]: http://topepo.github.io/caret/preprocess.html
